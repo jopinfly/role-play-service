@@ -15,13 +15,28 @@ type ChatRequestBody = {
 const systemPrompt =
   "你是一个专业、友好、简洁的中文 AI 助手。回答时尽量先给结论，再给必要解释。";
 
-function chunkToText(content: string | Array<{ type: string; text?: string }>) {
+function chunkToText(content: unknown) {
   if (typeof content === "string") {
     return content;
   }
 
+  if (!Array.isArray(content)) {
+    return "";
+  }
+
   return content
-    .map((item) => ("text" in item && item.text ? item.text : ""))
+    .map((item) => {
+      if (typeof item === "string") {
+        return item;
+      }
+
+      if (item && typeof item === "object") {
+        const text = (item as { text?: unknown }).text;
+        return typeof text === "string" ? text : "";
+      }
+
+      return "";
+    })
     .join("");
 }
 
