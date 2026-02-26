@@ -16,7 +16,7 @@ export function getSql() {
   return neonClient;
 }
 
-export async function ensureUsersTable() {
+export async function ensureSchema() {
   if (schemaReady) {
     return;
   }
@@ -62,5 +62,71 @@ export async function ensureUsersTable() {
     );
   `;
 
+  await sql`
+    CREATE TABLE IF NOT EXISTS preset_roles (
+      id BIGSERIAL PRIMARY KEY,
+      code VARCHAR(64) NOT NULL UNIQUE,
+      name VARCHAR(100) NOT NULL,
+      description TEXT,
+      system_prompt TEXT NOT NULL,
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS chat_sessions (
+      id UUID PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      preset_role_id BIGINT NOT NULL REFERENCES preset_roles(id) ON DELETE CASCADE,
+      title VARCHAR(255),
+      initial_context TEXT,
+      status VARCHAR(20) NOT NULL DEFAULT 'active',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `;
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_chat_sessions_user_role_status_updated
+    ON chat_sessions (user_id, preset_role_id, status, updated_at DESC);
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      id BIGSERIAL PRIMARY KEY,
+      session_id UUID NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+      role VARCHAR(20) NOT NULL,
+      content TEXT NOT NULL,
+      seq_no INT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `;
+
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_messages_session_seq
+    ON chat_messages (session_id, seq_no);
+  `;
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_chat_messages_session_created
+    ON chat_messages (session_id, created_at);
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS message_summaries (
+      id BIGSERIAL PRIMARY KEY,
+      message_id BIGINT NOT NULL UNIQUE REFERENCES chat_messages(id) ON DELETE CASCADE,
+      summary TEXT NOT NULL,
+      model VARCHAR(100),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `;
+
   schemaReady = true;
+}
+
+export async function ensureUsersTable() {
+  await ensureSchema();
 }

@@ -5,6 +5,10 @@
 - 流式输出（SSE）
 - 聊天气泡动画
 - Neon 数据库用户体系
+- 预设角色（Preset Roles）
+- 按用户 + 角色独立会话存储
+- 会话上下文重启（新建会话，保留历史）
+- 消息级摘要存储
 - 注册 / 登录 / 登出
 - JWT Token 鉴权（有效期 30 天）
 - 页面与 API 访问保护
@@ -30,8 +34,10 @@ cp env.example .env.local
 ```bash
 OPENAI_API_KEY=your_openai_api_key
 OPENAI_MODEL=gpt-4o-mini
+SUMMARY_MODEL=gpt-4o-mini
 DATABASE_URL=your_neon_database_url
 JWT_SECRET=your_jwt_secret_at_least_32_chars
+INTERNAL_API_KEY=your_internal_api_key
 LOGIN_MAX_ATTEMPTS=5
 LOGIN_ATTEMPT_WINDOW_SECONDS=900
 LOGIN_LOCK_SECONDS=1800
@@ -79,7 +85,9 @@ pnpm dev
 
 ```json
 {
-  "messages": [{ "role": "user", "content": "你好，介绍一下你自己" }]
+  "presetRoleCode": "assistant",
+  "sessionId": "optional-session-id",
+  "content": "你好，介绍一下你自己"
 }
 ```
 
@@ -88,3 +96,33 @@ pnpm dev
 ```json
 { "type": "token", "content": "你好" }
 ```
+
+```json
+{ "type": "session", "sessionId": "new-or-existing-session-id" }
+```
+
+## 预设角色与会话 API
+
+- `POST /api/internal/presets`
+  - 内部接口，请求头需要：`x-internal-api-key`
+  - body: `{ code, name, description?, systemPrompt, isActive? }`
+- `GET /api/presets`
+  - 获取可用预设角色列表（`is_active = true`）
+- `GET /api/chat/sessions?presetRoleCode=<code>`
+  - 获取当前用户在该角色下的会话列表
+- `POST /api/chat/sessions`
+  - body: `{ presetRoleCode, initialContext? }`
+  - 创建新会话
+- `GET /api/chat/sessions?sessionId=<id>`
+  - 获取指定会话的历史消息
+- `POST /api/chat/restart`
+  - body: `{ presetRoleCode, initialContext? }`
+  - 针对某角色创建新会话作为“重启上下文”，旧会话保留
+
+## 端到端验证建议
+
+1. 用内部接口创建至少 2 个预设角色（如 `assistant`、`coach`）。
+2. 同一账号分别在两个角色下各发送 2 条消息，确认会话与消息隔离。
+3. 调用 `POST /api/chat/restart` 为某个角色写入新 `initialContext` 并继续对话，确认返回新 `sessionId`。
+4. 用第二个账号重复步骤 2，确认不同用户之间历史隔离。
+5. 在数据库检查 `chat_messages` 与 `message_summaries`，确认每条消息都有摘要记录。

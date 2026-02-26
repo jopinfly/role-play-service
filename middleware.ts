@@ -18,6 +18,10 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
+  if (pathname.startsWith("/api/internal")) {
+    return NextResponse.next();
+  }
+
   const token = extractTokenFromRequest(request);
   const authUser = token ? await verifyAuthTokenStateless(token) : null;
 

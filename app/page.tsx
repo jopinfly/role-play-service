@@ -2,24 +2,51 @@
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
+type PresetRole = {
+  id: string;
+  code: string;
+  name: string;
+  description: string | null;
+};
+
+type ChatSession = {
+  id: string;
+  title: string | null;
+  initialContext: string | null;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type ChatMessage = {
-  role: "user" | "assistant";
+  role: "system" | "user" | "assistant";
   content: string;
 };
 
+function buildAssistantGreeting(roleName?: string) {
+  if (!roleName) {
+    return "请选择一个预设角色后开始对话。";
+  }
+  return `你正在与「${roleName}」对话。输入消息开始聊天。`;
+}
+
 export default function Home() {
   const [profile, setProfile] = useState<{ username: string; email: string } | null>(null);
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      role: "assistant",
-      content: "你好，我是基于 LangChain 的聊天机器人。你可以直接问我问题。",
-    },
-  ]);
+  const [presets, setPresets] = useState<PresetRole[]>([]);
+  const [selectedPresetCode, setSelectedPresetCode] = useState("");
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
+  const [restartContext, setRestartContext] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
+  const selectedPreset = useMemo(
+    () => presets.find((preset) => preset.code === selectedPresetCode) ?? null,
+    [presets, selectedPresetCode],
+  );
   const canSubmit = useMemo(() => input.trim().length > 0 && !isLoading, [input, isLoading]);
 
   useEffect(() => {
@@ -27,21 +54,42 @@ export default function Home() {
   }, [messages, isLoading]);
 
   useEffect(() => {
-    const loadProfile = async () => {
-      const response = await fetch("/api/auth/me");
-      if (!response.ok) {
+    const loadInitialData = async () => {
+      const [profileResponse, presetResponse] = await Promise.all([
+        fetch("/api/auth/me"),
+        fetch("/api/presets"),
+      ]);
+
+      if (profileResponse.ok) {
+        const profileData = (await profileResponse.json()) as {
+          user?: { username?: string; email?: string };
+        };
+        if (profileData.user?.username && profileData.user?.email) {
+          setProfile({ username: profileData.user.username, email: profileData.user.email });
+        }
+      }
+
+      if (!presetResponse.ok) {
+        if (presetResponse.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+        setError("获取预设角色失败，请稍后重试。");
         return;
       }
 
-      const data = (await response.json()) as {
-        user?: { username?: string; email?: string };
+      const presetData = (await presetResponse.json()) as {
+        presets?: PresetRole[];
       };
-      if (data.user?.username && data.user?.email) {
-        setProfile({ username: data.user.username, email: data.user.email });
+      const nextPresets = presetData.presets ?? [];
+      setPresets(nextPresets);
+      setSelectedPresetCode((prev) => prev || nextPresets[0]?.code || "");
+      if (nextPresets.length === 0) {
+        setMessages([{ role: "assistant", content: "暂无可用预设角色，请联系管理员创建。" }]);
       }
     };
 
-    void loadProfile();
+    void loadInitialData();
   }, []);
 
   const handleLogout = async () => {
@@ -49,10 +97,126 @@ export default function Home() {
     window.location.href = "/login";
   };
 
+  const loadSessionMessages = async (sessionId: string, presetName?: string) => {
+    const response = await fetch(`/api/chat/sessions?sessionId=${encodeURIComponent(sessionId)}`);
+    if (!response.ok) {
+      throw new Error("加载会话消息失败。");
+    }
+    const data = (await response.json()) as { messages?: ChatMessage[] };
+    const loadedMessages = (data.messages ?? []).filter(
+      (message) => message.role === "user" || message.role === "assistant",
+    );
+    if (loadedMessages.length === 0) {
+      setMessages([{ role: "assistant", content: buildAssistantGreeting(presetName) }]);
+      return;
+    }
+    setMessages(loadedMessages);
+  };
+
+  const loadSessions = async (presetRoleCode: string) => {
+    if (!presetRoleCode) {
+      return;
+    }
+    const response = await fetch(
+      `/api/chat/sessions?presetRoleCode=${encodeURIComponent(presetRoleCode)}`,
+    );
+    if (!response.ok) {
+      if (response.status === 401) {
+        window.location.href = "/login";
+        return;
+      }
+      throw new Error("获取会话列表失败。");
+    }
+    const data = (await response.json()) as { sessions?: ChatSession[] };
+    const nextSessions = data.sessions ?? [];
+    setSessions(nextSessions);
+    if (nextSessions.length === 0) {
+      setCurrentSessionId(null);
+      const presetName = presets.find((preset) => preset.code === presetRoleCode)?.name;
+      setMessages([{ role: "assistant", content: buildAssistantGreeting(presetName) }]);
+      return;
+    }
+    const firstSessionId = nextSessions[0].id;
+    setCurrentSessionId(firstSessionId);
+    const presetName = presets.find((preset) => preset.code === presetRoleCode)?.name;
+    await loadSessionMessages(firstSessionId, presetName);
+  };
+
+  useEffect(() => {
+    if (!selectedPresetCode) {
+      return;
+    }
+    void loadSessions(selectedPresetCode).catch((loadError) => {
+      const message = loadError instanceof Error ? loadError.message : "加载会话失败。";
+      setError(message);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPresetCode]);
+
+  const refreshCurrentPresetSessions = async (presetRoleCode: string) => {
+    const response = await fetch(
+      `/api/chat/sessions?presetRoleCode=${encodeURIComponent(presetRoleCode)}`,
+    );
+    if (!response.ok) {
+      return;
+    }
+    const data = (await response.json()) as { sessions?: ChatSession[] };
+    setSessions(data.sessions ?? []);
+  };
+
+  const handleSwitchSession = async (sessionId: string) => {
+    if (!selectedPresetCode || isLoading) {
+      return;
+    }
+    setError("");
+    setCurrentSessionId(sessionId);
+    try {
+      await loadSessionMessages(sessionId, selectedPreset?.name);
+    } catch (switchError) {
+      const message = switchError instanceof Error ? switchError.message : "切换会话失败。";
+      setError(message);
+    }
+  };
+
+  const handleRestartContext = async () => {
+    if (!selectedPresetCode || isLoading) {
+      return;
+    }
+    setError("");
+    try {
+      const response = await fetch("/api/chat/restart", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          presetRoleCode: selectedPresetCode,
+          initialContext: restartContext.trim() || undefined,
+        }),
+      });
+      if (!response.ok) {
+        const data = (await response.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(data?.error ?? "重启上下文失败。");
+      }
+      const data = (await response.json()) as { session?: ChatSession };
+      if (data.session?.id) {
+        setCurrentSessionId(data.session.id);
+      }
+      setMessages([{ role: "assistant", content: buildAssistantGreeting(selectedPreset?.name) }]);
+      setRestartContext("");
+      await refreshCurrentPresetSessions(selectedPresetCode);
+    } catch (restartError) {
+      const message = restartError instanceof Error ? restartError.message : "重启上下文失败。";
+      setError(message);
+    }
+  };
+
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const userInput = input.trim();
 
+    if (!selectedPresetCode) {
+      setError("请先选择预设角色。");
+      return;
+    }
     if (!userInput || isLoading) {
       return;
     }
@@ -61,14 +225,18 @@ export default function Home() {
     setInput("");
     setIsLoading(true);
 
-    const nextMessages = [...messages, { role: "user" as const, content: userInput }];
-    setMessages([...nextMessages, { role: "assistant", content: "" }]);
+    const presetCodeAtRequest = selectedPresetCode;
+    setMessages((prev) => [...prev, { role: "user", content: userInput }, { role: "assistant", content: "" }]);
 
     try {
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: nextMessages }),
+        body: JSON.stringify({
+          presetRoleCode: presetCodeAtRequest,
+          sessionId: currentSessionId,
+          content: userInput,
+        }),
       });
       if (!response.ok) {
         const data = (await response.json().catch(() => null)) as
@@ -114,10 +282,15 @@ export default function Home() {
           }
 
           const payload = JSON.parse(dataLine.slice(6)) as {
-            type: "token" | "done" | "error";
+            type: "session" | "token" | "done" | "error";
+            sessionId?: string;
             content?: string;
             error?: string;
           };
+
+          if (payload.type === "session" && payload.sessionId) {
+            setCurrentSessionId(payload.sessionId);
+          }
 
           if (payload.type === "token" && payload.content) {
             setMessages((prev) => {
@@ -140,6 +313,7 @@ export default function Home() {
           }
         }
       }
+      await refreshCurrentPresetSessions(presetCodeAtRequest);
     } catch (submitError) {
       const message =
         submitError instanceof Error ? submitError.message : "请求失败，请检查网络或配置。";
@@ -155,7 +329,7 @@ export default function Home() {
         <div>
           <h1 className="text-2xl font-semibold">LangChain Chatbot</h1>
           <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
-            前端基于 Next.js，后端通过 LangChain 调用大模型。
+            支持预设角色、独立会话、消息摘要与上下文重启。
           </p>
           {profile ? (
             <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
@@ -171,6 +345,64 @@ export default function Home() {
           退出登录
         </button>
       </header>
+
+      <section className="mb-4 grid gap-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-900 md:grid-cols-3">
+        <div className="space-y-1">
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">预设角色</p>
+          <select
+            value={selectedPresetCode}
+            onChange={(event) => setSelectedPresetCode(event.target.value)}
+            className="w-full rounded-lg border border-zinc-300 bg-white px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950"
+          >
+            {presets.map((preset) => (
+              <option key={preset.code} value={preset.code}>
+                {preset.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="space-y-1 md:col-span-2">
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">会话列表</p>
+          <div className="flex flex-wrap gap-2">
+            {sessions.length === 0 ? (
+              <span className="text-xs text-zinc-500 dark:text-zinc-400">暂无历史会话</span>
+            ) : (
+              sessions.map((session) => (
+                <button
+                  key={session.id}
+                  type="button"
+                  onClick={() => void handleSwitchSession(session.id)}
+                  className={`rounded-lg border px-2 py-1 text-xs ${
+                    currentSessionId === session.id
+                      ? "border-blue-600 bg-blue-600 text-white"
+                      : "border-zinc-300 hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                  }`}
+                >
+                  {session.id.slice(0, 8)}
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+        <div className="space-y-1 md:col-span-3">
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">重启上下文（可选）</p>
+          <div className="flex gap-2">
+            <input
+              value={restartContext}
+              onChange={(event) => setRestartContext(event.target.value)}
+              placeholder="输入该角色新的初始上下文，然后点击“重启会话”"
+              className="w-full rounded-lg border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950"
+            />
+            <button
+              type="button"
+              onClick={() => void handleRestartContext()}
+              className="rounded-lg border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+            >
+              重启会话
+            </button>
+          </div>
+        </div>
+      </section>
 
       <main className="flex-1 space-y-3 overflow-y-auto scroll-smooth rounded-xl border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900">
         {messages.map((message, index) => (
@@ -198,7 +430,7 @@ export default function Home() {
         <textarea
           value={input}
           onChange={(event) => setInput(event.target.value)}
-          placeholder="输入你的问题，按发送即可对话"
+          placeholder="输入你的问题，按发送即可对话（按角色独立存储）"
           className="min-h-28 w-full resize-y rounded-xl border border-zinc-300 p-3 text-sm outline-none ring-blue-500 transition focus:ring-2 dark:border-zinc-700 dark:bg-zinc-900"
         />
         <div className="flex items-center justify-between">

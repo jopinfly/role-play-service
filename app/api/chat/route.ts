@@ -1,20 +1,23 @@
 import { ChatOpenAI } from "@langchain/openai";
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthFromRequest } from "@/lib/auth";
+import {
+  appendChatMessage,
+  createChatSession,
+  getLatestSessionByRole,
+  getPresetRoleByCode,
+  getSessionById,
+  listSessionMessages,
+} from "@/lib/chat-store";
+import { summarizeAndStoreMessage } from "@/lib/chat-summary";
 
 type ChatRole = "system" | "user" | "assistant";
 
-type ChatMessage = {
-  role: ChatRole;
-  content: string;
-};
-
 type ChatRequestBody = {
-  messages?: ChatMessage[];
+  presetRoleCode?: string;
+  sessionId?: string;
+  content?: string;
 };
-
-const systemPrompt =
-  "你是一个专业、友好、简洁的中文 AI 助手。回答时尽量先给结论，再给必要解释。";
 
 function chunkToText(content: unknown) {
   if (typeof content === "string") {
@@ -62,23 +65,72 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "请求体不是合法 JSON。" }, { status: 400 });
   }
 
-  const incomingMessages = body.messages ?? [];
-  if (!Array.isArray(incomingMessages) || incomingMessages.length === 0) {
-    return NextResponse.json({ error: "messages 不能为空。" }, { status: 400 });
+  const presetRoleCode = body.presetRoleCode?.trim() ?? "";
+  const userContent = body.content?.trim() ?? "";
+  if (!presetRoleCode) {
+    return NextResponse.json({ error: "presetRoleCode 不能为空。" }, { status: 400 });
+  }
+  if (!userContent) {
+    return NextResponse.json({ error: "content 不能为空。" }, { status: 400 });
   }
 
-  const parsedMessages: Array<{ role: ChatRole; content: string }> = [
-    { role: "system", content: systemPrompt },
-  ];
-  for (const message of incomingMessages) {
-    if (!message?.content?.trim()) {
-      continue;
-    }
-
-    parsedMessages.push({ role: message.role, content: message.content });
+  const preset = await getPresetRoleByCode(presetRoleCode);
+  if (!preset) {
+    return NextResponse.json({ error: "预设角色不存在。" }, { status: 404 });
   }
 
   try {
+    let session =
+      body.sessionId?.trim() && body.sessionId.trim().length > 0
+        ? await getSessionById({ sessionId: body.sessionId.trim(), userId: authUser.userId })
+        : null;
+
+    if (session && session.presetRoleId !== preset.id) {
+      return NextResponse.json({ error: "sessionId 与 presetRoleCode 不匹配。" }, { status: 400 });
+    }
+
+    if (!session) {
+      session = await getLatestSessionByRole({
+        userId: authUser.userId,
+        presetRoleId: preset.id,
+      });
+    }
+    if (!session) {
+      session = await createChatSession({
+        userId: authUser.userId,
+        presetRoleId: preset.id,
+      });
+    }
+
+    const history = await listSessionMessages(session.id, 20);
+    const parsedMessages: Array<{ role: ChatRole; content: string }> = [
+      { role: "system", content: preset.systemPrompt },
+    ];
+    if (session.initialContext?.trim()) {
+      parsedMessages.push({
+        role: "system",
+        content: `以下是用户指定的会话上下文，请在本轮及后续对话中参考：${session.initialContext.trim()}`,
+      });
+    }
+    for (const message of history) {
+      if (!message.content.trim()) {
+        continue;
+      }
+      parsedMessages.push({ role: message.role, content: message.content });
+    }
+    parsedMessages.push({ role: "user", content: userContent });
+
+    const userMessage = await appendChatMessage({
+      sessionId: session.id,
+      role: "user",
+      content: userContent,
+    });
+    try {
+      await summarizeAndStoreMessage(userMessage.id, userMessage.content);
+    } catch (summaryError) {
+      console.error("user message summary failed", summaryError);
+    }
+
     const model = new ChatOpenAI({
       apiKey: process.env.OPENAI_API_KEY,
       model: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
@@ -89,16 +141,38 @@ export async function POST(request: NextRequest) {
     const encoder = new TextEncoder();
     const output = new ReadableStream({
       async start(controller) {
+        let assistantOutput = "";
         try {
+          controller.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({ type: "session", sessionId: session.id })}\n\n`,
+            ),
+          );
+
           for await (const chunk of stream) {
             const text = chunkToText(chunk.content);
             if (!text) {
               continue;
             }
+            assistantOutput += text;
 
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ type: "token", content: text })}\n\n`),
             );
+          }
+
+          const trimmedAssistant = assistantOutput.trim();
+          if (trimmedAssistant) {
+            const assistantMessage = await appendChatMessage({
+              sessionId: session.id,
+              role: "assistant",
+              content: trimmedAssistant,
+            });
+            try {
+              await summarizeAndStoreMessage(assistantMessage.id, assistantMessage.content);
+            } catch (summaryError) {
+              console.error("assistant message summary failed", summaryError);
+            }
           }
 
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "done" })}\n\n`));
