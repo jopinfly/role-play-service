@@ -8,6 +8,7 @@ type ChatMessage = {
 };
 
 export default function Home() {
+  const [profile, setProfile] = useState<{ username: string; email: string } | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: "assistant",
@@ -24,6 +25,29 @@ export default function Home() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isLoading]);
+
+  useEffect(() => {
+    const loadProfile = async () => {
+      const response = await fetch("/api/auth/me");
+      if (!response.ok) {
+        return;
+      }
+
+      const data = (await response.json()) as {
+        user?: { username?: string; email?: string };
+      };
+      if (data.user?.username && data.user?.email) {
+        setProfile({ username: data.user.username, email: data.user.email });
+      }
+    };
+
+    void loadProfile();
+  }, []);
+
+  const handleLogout = async () => {
+    await fetch("/api/auth/logout", { method: "POST" });
+    window.location.href = "/login";
+  };
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -50,6 +74,10 @@ export default function Home() {
         const data = (await response.json().catch(() => null)) as
           | { error?: string }
           | null;
+        if (response.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
         throw new Error(data?.error ?? "服务暂时不可用，请稍后再试。");
       }
 
@@ -123,11 +151,25 @@ export default function Home() {
 
   return (
     <div className="mx-auto flex min-h-screen w-full max-w-3xl flex-col bg-white px-4 py-8 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100 sm:px-6">
-      <header className="mb-6">
-        <h1 className="text-2xl font-semibold">LangChain Chatbot</h1>
-        <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
-          前端基于 Next.js，后端通过 LangChain 调用大模型。
-        </p>
+      <header className="mb-6 flex items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold">LangChain Chatbot</h1>
+          <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
+            前端基于 Next.js，后端通过 LangChain 调用大模型。
+          </p>
+          {profile ? (
+            <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+              当前用户：{profile.username} ({profile.email})
+            </p>
+          ) : null}
+        </div>
+        <button
+          onClick={handleLogout}
+          type="button"
+          className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm transition hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-900"
+        >
+          退出登录
+        </button>
       </header>
 
       <main className="flex-1 space-y-3 overflow-y-auto scroll-smooth rounded-xl border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900">

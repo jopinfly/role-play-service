@@ -1,5 +1,6 @@
 import { ChatOpenAI } from "@langchain/openai";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { getAuthFromRequest } from "@/lib/auth";
 
 type ChatRole = "system" | "user" | "assistant";
 
@@ -40,7 +41,12 @@ function chunkToText(content: unknown) {
     .join("");
 }
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
+  const authUser = await getAuthFromRequest(request);
+  if (!authUser) {
+    return NextResponse.json({ error: "未登录或 token 无效。" }, { status: 401 });
+  }
+
   if (!process.env.OPENAI_API_KEY) {
     return NextResponse.json(
       { error: "缺少 OPENAI_API_KEY，请先在 .env.local 中配置。" },
