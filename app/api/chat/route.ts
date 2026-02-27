@@ -11,6 +11,7 @@ import {
 } from "@/lib/chat-store";
 import { summarizeAndStoreMessage } from "@/lib/chat-summary";
 import { synthesizeSpeechByMiniMax } from "@/lib/minimax-tts";
+import { generateImageByStability } from "@/lib/stability-image";
 
 type ChatRole = "system" | "user" | "assistant";
 
@@ -19,6 +20,7 @@ type ChatRequestBody = {
   sessionId?: string;
   content?: string;
   responseMode?: "text" | "audio";
+  allowImageReply?: boolean;
 };
 
 function chunkToText(content: unknown) {
@@ -59,6 +61,46 @@ async function saveAssistantMessageAndSummary(sessionId: string, assistantText: 
   }
 }
 
+type ImageDecision = {
+  useImage: boolean;
+  imagePrompt: string;
+};
+
+async function decideImageReply(input: {
+  userContent: string;
+  assistantText: string;
+  modelName: string;
+}) {
+  const decisionModel = new ChatOpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+    model: input.modelName,
+    temperature: 0,
+  });
+
+  const decision = await decisionModel.invoke([
+    {
+      role: "system",
+      content:
+        "你是回复模态决策器。请严格输出 JSON：{\"useImage\": boolean, \"imagePrompt\": string}。当用户明确要求生成图片、海报、插画、场景图、封面、头像、示意图时 useImage=true，否则 false。imagePrompt 需为可直接用于文生图的中文提示词，包含主体、风格、构图、光线、画质。",
+    },
+    {
+      role: "user",
+      content: `用户输入：${input.userContent}\n文本回复候选：${input.assistantText}`,
+    },
+  ]);
+
+  const raw = chunkToText(decision.content).trim();
+  try {
+    const parsed = JSON.parse(raw) as Partial<ImageDecision>;
+    return {
+      useImage: parsed.useImage === true,
+      imagePrompt: (parsed.imagePrompt ?? "").trim(),
+    };
+  } catch {
+    return { useImage: false, imagePrompt: "" };
+  }
+}
+
 export async function POST(request: NextRequest) {
   const authUser = await getAuthFromRequest(request);
   if (!authUser) {
@@ -83,6 +125,7 @@ export async function POST(request: NextRequest) {
   const presetRoleCode = body.presetRoleCode?.trim() ?? "";
   const userContent = body.content?.trim() ?? "";
   const responseMode = body.responseMode === "audio" ? "audio" : "text";
+  const allowImageReply = body.allowImageReply === true;
   if (!presetRoleCode) {
     return NextResponse.json({ error: "presetRoleCode 不能为空。" }, { status: 400 });
   }
@@ -153,7 +196,7 @@ export async function POST(request: NextRequest) {
       temperature: 0.7,
     });
 
-    if (responseMode === "audio") {
+    if (allowImageReply || responseMode === "audio") {
       const invokeResult = await model.invoke(parsedMessages);
       const assistantText = chunkToText(invokeResult.content).trim();
       if (!assistantText) {
@@ -161,12 +204,44 @@ export async function POST(request: NextRequest) {
       }
 
       await saveAssistantMessageAndSummary(session.id, assistantText);
-      const audio = await synthesizeSpeechByMiniMax({ text: assistantText });
+
+      if (allowImageReply) {
+        try {
+          const decision = await decideImageReply({
+            userContent,
+            assistantText,
+            modelName: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
+          });
+          if (decision.useImage) {
+            const image = await generateImageByStability({
+              prompt: decision.imagePrompt || userContent,
+            });
+            return NextResponse.json({
+              type: "image",
+              sessionId: session.id,
+              content: assistantText,
+              image,
+            });
+          }
+        } catch (imageError) {
+          console.error("image reply decision/generation failed", imageError);
+        }
+      }
+
+      if (responseMode === "audio") {
+        const audio = await synthesizeSpeechByMiniMax({ text: assistantText });
+        return NextResponse.json({
+          type: "audio",
+          sessionId: session.id,
+          content: assistantText,
+          audio,
+        });
+      }
 
       return NextResponse.json({
-        type: "audio",
+        type: "text",
         sessionId: session.id,
-        audio,
+        content: assistantText,
       });
     }
 
