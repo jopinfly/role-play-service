@@ -10,6 +10,7 @@ import {
   listSessionMessages,
 } from "@/lib/chat-store";
 import { summarizeAndStoreMessage } from "@/lib/chat-summary";
+import { synthesizeSpeechByMiniMax } from "@/lib/minimax-tts";
 
 type ChatRole = "system" | "user" | "assistant";
 
@@ -17,6 +18,7 @@ type ChatRequestBody = {
   presetRoleCode?: string;
   sessionId?: string;
   content?: string;
+  responseMode?: "text" | "audio";
 };
 
 function chunkToText(content: unknown) {
@@ -44,6 +46,19 @@ function chunkToText(content: unknown) {
     .join("");
 }
 
+async function saveAssistantMessageAndSummary(sessionId: string, assistantText: string) {
+  const assistantMessage = await appendChatMessage({
+    sessionId,
+    role: "assistant",
+    content: assistantText,
+  });
+  try {
+    await summarizeAndStoreMessage(assistantMessage.id, assistantMessage.content);
+  } catch (summaryError) {
+    console.error("assistant message summary failed", summaryError);
+  }
+}
+
 export async function POST(request: NextRequest) {
   const authUser = await getAuthFromRequest(request);
   if (!authUser) {
@@ -67,6 +82,7 @@ export async function POST(request: NextRequest) {
 
   const presetRoleCode = body.presetRoleCode?.trim() ?? "";
   const userContent = body.content?.trim() ?? "";
+  const responseMode = body.responseMode === "audio" ? "audio" : "text";
   if (!presetRoleCode) {
     return NextResponse.json({ error: "presetRoleCode 不能为空。" }, { status: 400 });
   }
@@ -137,6 +153,23 @@ export async function POST(request: NextRequest) {
       temperature: 0.7,
     });
 
+    if (responseMode === "audio") {
+      const invokeResult = await model.invoke(parsedMessages);
+      const assistantText = chunkToText(invokeResult.content).trim();
+      if (!assistantText) {
+        throw new Error("模型未生成可用回复。");
+      }
+
+      await saveAssistantMessageAndSummary(session.id, assistantText);
+      const audio = await synthesizeSpeechByMiniMax({ text: assistantText });
+
+      return NextResponse.json({
+        type: "audio",
+        sessionId: session.id,
+        audio,
+      });
+    }
+
     const stream = await model.stream(parsedMessages);
     const encoder = new TextEncoder();
     const output = new ReadableStream({
@@ -163,16 +196,7 @@ export async function POST(request: NextRequest) {
 
           const trimmedAssistant = assistantOutput.trim();
           if (trimmedAssistant) {
-            const assistantMessage = await appendChatMessage({
-              sessionId: session.id,
-              role: "assistant",
-              content: trimmedAssistant,
-            });
-            try {
-              await summarizeAndStoreMessage(assistantMessage.id, assistantMessage.content);
-            } catch (summaryError) {
-              console.error("assistant message summary failed", summaryError);
-            }
+            await saveAssistantMessageAndSummary(session.id, trimmedAssistant);
           }
 
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "done" })}\n\n`));

@@ -9,6 +9,7 @@
 - 按用户 + 角色独立会话存储
 - 会话上下文重启（新建会话，保留历史）
 - 消息级摘要存储
+- 可选语音回复（MiniMax TTS）
 - 注册 / 登录 / 登出
 - JWT Token 鉴权（有效期 30 天）
 - 页面与 API 访问保护
@@ -35,6 +36,11 @@ cp env.example .env.local
 OPENAI_API_KEY=your_openai_api_key
 OPENAI_MODEL=gpt-4o-mini
 SUMMARY_MODEL=gpt-4o-mini
+MINIMAX_API_KEY=your_minimax_api_key
+MINIMAX_TTS_MODEL=speech-2.8-hd
+MINIMAX_TTS_VOICE_ID=male-qn-qingse
+MINIMAX_TTS_FORMAT=mp3
+MINIMAX_TTS_ENDPOINT=https://api.minimaxi.com/v1/t2a_v2
 DATABASE_URL=your_neon_database_url
 JWT_SECRET=your_jwt_secret_at_least_32_chars
 INTERNAL_API_KEY=your_internal_api_key
@@ -87,9 +93,14 @@ pnpm dev
 {
   "presetRoleCode": "assistant",
   "sessionId": "optional-session-id",
-  "content": "你好，介绍一下你自己"
+  "content": "你好，介绍一下你自己",
+  "responseMode": "text"
 }
 ```
+
+- `responseMode` 可选值：
+  - `text`：默认，返回 SSE 文本流
+  - `audio`：返回 JSON 音频数据（base64 + mimeType）
 
 - 返回：SSE 流式事件
 
@@ -99,6 +110,19 @@ pnpm dev
 
 ```json
 { "type": "session", "sessionId": "new-or-existing-session-id" }
+```
+
+- 当 `responseMode = "audio"` 时返回示例：
+
+```json
+{
+  "type": "audio",
+  "sessionId": "new-or-existing-session-id",
+  "audio": {
+    "mimeType": "audio/mpeg",
+    "base64": "...."
+  }
+}
 ```
 
 ## 预设角色与会话 API

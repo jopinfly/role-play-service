@@ -21,6 +21,8 @@ type ChatSession = {
 type ChatMessage = {
   role: "system" | "user" | "assistant";
   content: string;
+  mode?: "text" | "audio";
+  audioUrl?: string;
 };
 
 function buildAssistantGreeting(roleName?: string) {
@@ -39,6 +41,7 @@ export default function Home() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [restartContext, setRestartContext] = useState("");
+  const [voiceReplyEnabled, setVoiceReplyEnabled] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
   const bottomRef = useRef<HTMLDivElement | null>(null);
@@ -236,6 +239,7 @@ export default function Home() {
           presetRoleCode: presetCodeAtRequest,
           sessionId: currentSessionId,
           content: userInput,
+          responseMode: voiceReplyEnabled ? "audio" : "text",
         }),
       });
       if (!response.ok) {
@@ -247,6 +251,39 @@ export default function Home() {
           return;
         }
         throw new Error(data?.error ?? "服务暂时不可用，请稍后再试。");
+      }
+
+      if (voiceReplyEnabled) {
+        const payload = (await response.json()) as {
+          type: "audio";
+          sessionId?: string;
+          audio?: { base64?: string; mimeType?: string };
+        };
+        if (payload.sessionId) {
+          setCurrentSessionId(payload.sessionId);
+        }
+        const mimeType = payload.audio?.mimeType ?? "audio/mpeg";
+        const base64 = payload.audio?.base64 ?? "";
+        if (!base64) {
+          throw new Error("语音合成成功但音频为空。");
+        }
+        const audioUrl = `data:${mimeType};base64,${base64}`;
+        setMessages((prev) => {
+          const next = [...prev];
+          const last = next[next.length - 1];
+          if (!last || last.role !== "assistant") {
+            return prev;
+          }
+          next[next.length - 1] = {
+            ...last,
+            content: "语音回复",
+            mode: "audio",
+            audioUrl,
+          };
+          return next;
+        });
+        await refreshCurrentPresetSessions(presetCodeAtRequest);
+        return;
       }
 
       if (!response.body) {
@@ -303,6 +340,7 @@ export default function Home() {
               next[next.length - 1] = {
                 ...last,
                 content: `${last.content}${payload.content}`,
+                mode: "text",
               };
               return next;
             });
@@ -402,6 +440,16 @@ export default function Home() {
             </button>
           </div>
         </div>
+        <div className="space-y-1 md:col-span-3">
+          <label className="inline-flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-200">
+            <input
+              type="checkbox"
+              checked={voiceReplyEnabled}
+              onChange={(event) => setVoiceReplyEnabled(event.target.checked)}
+            />
+            语音回复（仅输出语音，不支持语音输入）
+          </label>
+        </div>
       </section>
 
       <main className="flex-1 space-y-3 overflow-y-auto scroll-smooth rounded-xl border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900">
@@ -414,7 +462,13 @@ export default function Home() {
                 : "bg-white text-zinc-800 dark:bg-zinc-800 dark:text-zinc-100"
             }`}
           >
-            {message.content || (
+            {message.mode === "audio" && message.audioUrl ? (
+              <audio controls src={message.audioUrl} className="w-full max-w-sm">
+                你的浏览器不支持 audio 标签。
+              </audio>
+            ) : message.content ? (
+              message.content
+            ) : (
               <span className="typing-dots">
                 <i />
                 <i />
