@@ -1,6 +1,7 @@
 import { ensureSchema, getSql, toRows } from "@/lib/db";
 
 export type ChatRole = "system" | "user" | "assistant";
+export type ChatMessageType = "text" | "audio" | "image";
 
 type PresetRoleRow = {
   id: string;
@@ -25,7 +26,10 @@ type ChatSessionRow = {
 type ChatMessageRow = {
   id: string;
   role: ChatRole;
+  message_type: ChatMessageType;
   content: string;
+  media_url: string | null;
+  media_mime_type: string | null;
   seq_no: number;
   created_at: string;
 };
@@ -53,7 +57,10 @@ export type ChatSession = {
 export type ChatMessage = {
   id: string;
   role: ChatRole;
+  messageType: ChatMessageType;
   content: string;
+  mediaUrl: string | null;
+  mediaMimeType: string | null;
   seqNo: number;
   createdAt: string;
 };
@@ -86,7 +93,10 @@ function mapChatMessage(row: ChatMessageRow): ChatMessage {
   return {
     id: String(row.id),
     role: row.role,
+    messageType: row.message_type,
     content: row.content,
+    mediaUrl: row.media_url,
+    mediaMimeType: row.media_mime_type,
     seqNo: row.seq_no,
     createdAt: row.created_at,
   };
@@ -226,7 +236,7 @@ export async function listSessionMessages(sessionId: string, limit = 20): Promis
   await ensureSchema();
   const sql = getSql();
   const result = await sql`
-    SELECT id, role, content, seq_no, created_at
+    SELECT id, role, message_type, content, media_url, media_mime_type, seq_no, created_at
     FROM chat_messages
     WHERE session_id = ${sessionId}
     ORDER BY seq_no DESC
@@ -239,7 +249,10 @@ export async function listSessionMessages(sessionId: string, limit = 20): Promis
 export async function appendChatMessage(input: {
   sessionId: string;
   role: ChatRole;
+  messageType?: ChatMessageType;
   content: string;
+  mediaUrl?: string | null;
+  mediaMimeType?: string | null;
 }) {
   await ensureSchema();
   const sql = getSql();
@@ -251,9 +264,17 @@ export async function appendChatMessage(input: {
   const nextRows = toRows<{ next_seq: number }>(nextResult);
   const nextSeq = nextRows[0]?.next_seq ?? 1;
   const insertResult = await sql`
-    INSERT INTO chat_messages (session_id, role, content, seq_no)
-    VALUES (${input.sessionId}, ${input.role}, ${input.content}, ${nextSeq})
-    RETURNING id, role, content, seq_no, created_at
+    INSERT INTO chat_messages (session_id, role, message_type, content, media_url, media_mime_type, seq_no)
+    VALUES (
+      ${input.sessionId},
+      ${input.role},
+      ${input.messageType ?? "text"},
+      ${input.content},
+      ${input.mediaUrl ?? null},
+      ${input.mediaMimeType ?? null},
+      ${nextSeq}
+    )
+    RETURNING id, role, message_type, content, media_url, media_mime_type, seq_no, created_at
   `;
   const inserted = toRows<ChatMessageRow>(insertResult);
   await touchSession(input.sessionId);

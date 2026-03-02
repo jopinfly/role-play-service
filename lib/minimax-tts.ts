@@ -34,6 +34,19 @@ function getAudioMime(format: string) {
   return "audio/mpeg";
 }
 
+function getAudioExtension(format: string) {
+  if (format === "wav") {
+    return "wav";
+  }
+  if (format === "flac") {
+    return "flac";
+  }
+  if (format === "pcm") {
+    return "wav";
+  }
+  return "mp3";
+}
+
 export async function synthesizeSpeechByMiniMax(input: SynthesizeSpeechInput) {
   const model = process.env.MINIMAX_TTS_MODEL ?? "speech-2.8-hd";
   const voiceId = process.env.MINIMAX_TTS_VOICE_ID ?? "male-qn-qingse";
@@ -86,6 +99,7 @@ export async function synthesizeSpeechByMiniMax(input: SynthesizeSpeechInput) {
 
   return {
     mimeType: getAudioMime(audioFormat),
-    base64: Buffer.from(audioHex, "hex").toString("base64"),
+    extension: getAudioExtension(audioFormat),
+    buffer: Buffer.from(audioHex, "hex"),
   };
 }

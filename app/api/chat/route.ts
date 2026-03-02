@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAuthFromRequest } from "@/lib/auth";
 import {
   appendChatMessage,
+  ChatMessageType,
   createChatSession,
   getLatestSessionByRole,
   getPresetRoleByCode,
@@ -12,6 +13,7 @@ import {
 import { summarizeAndStoreMessage } from "@/lib/chat-summary";
 import { synthesizeSpeechByMiniMax } from "@/lib/minimax-tts";
 import { generateImageByStability } from "@/lib/stability-image";
+import { uploadMediaToBlob } from "@/lib/blob-store";
 
 type ChatRole = "system" | "user" | "assistant";
 
@@ -48,11 +50,20 @@ function chunkToText(content: unknown) {
     .join("");
 }
 
-async function saveAssistantMessageAndSummary(sessionId: string, assistantText: string) {
+async function saveAssistantMessageAndSummary(input: {
+  sessionId: string;
+  assistantText: string;
+  messageType?: ChatMessageType;
+  mediaUrl?: string | null;
+  mediaMimeType?: string | null;
+}) {
   const assistantMessage = await appendChatMessage({
-    sessionId,
+    sessionId: input.sessionId,
     role: "assistant",
-    content: assistantText,
+    messageType: input.messageType ?? "text",
+    content: input.assistantText,
+    mediaUrl: input.mediaUrl,
+    mediaMimeType: input.mediaMimeType,
   });
   try {
     await summarizeAndStoreMessage(assistantMessage.id, assistantMessage.content);
@@ -214,6 +225,7 @@ export async function POST(request: NextRequest) {
     const userMessage = await appendChatMessage({
       sessionId: session.id,
       role: "user",
+      messageType: "text",
       content: userContent,
     });
     try {
@@ -235,8 +247,6 @@ export async function POST(request: NextRequest) {
         throw new Error("模型未生成可用回复。");
       }
 
-      await saveAssistantMessageAndSummary(session.id, assistantText);
-
       if (allowImageReply) {
         try {
           const decision = await decideImageReply({
@@ -248,11 +258,30 @@ export async function POST(request: NextRequest) {
             const image = await generateImageByStability({
               prompt: decision.imagePrompt || userContent,
             });
+            const imageMessageId = crypto.randomUUID();
+            const imageUrl = await uploadMediaToBlob({
+              folder: "image",
+              sessionId: session.id,
+              messageId: imageMessageId,
+              data: image.buffer,
+              extension: image.extension,
+              contentType: image.mimeType,
+            });
+            await saveAssistantMessageAndSummary({
+              sessionId: session.id,
+              assistantText,
+              messageType: "image",
+              mediaUrl: imageUrl,
+              mediaMimeType: image.mimeType,
+            });
             return NextResponse.json({
               type: "image",
               sessionId: session.id,
               content: assistantText,
-              image,
+              image: {
+                url: imageUrl,
+                mimeType: image.mimeType,
+              },
             });
           }
         } catch (imageError) {
@@ -262,14 +291,38 @@ export async function POST(request: NextRequest) {
 
       if (responseMode === "audio") {
         const audio = await synthesizeSpeechByMiniMax({ text: assistantText });
+        const audioMessageId = crypto.randomUUID();
+        const audioUrl = await uploadMediaToBlob({
+          folder: "audio",
+          sessionId: session.id,
+          messageId: audioMessageId,
+          data: audio.buffer,
+          extension: audio.extension,
+          contentType: audio.mimeType,
+        });
+        await saveAssistantMessageAndSummary({
+          sessionId: session.id,
+          assistantText,
+          messageType: "audio",
+          mediaUrl: audioUrl,
+          mediaMimeType: audio.mimeType,
+        });
         return NextResponse.json({
           type: "audio",
           sessionId: session.id,
           content: assistantText,
-          audio,
+          audio: {
+            url: audioUrl,
+            mimeType: audio.mimeType,
+          },
         });
       }
 
+      await saveAssistantMessageAndSummary({
+        sessionId: session.id,
+        assistantText,
+        messageType: "text",
+      });
       return NextResponse.json({
         type: "text",
         sessionId: session.id,
@@ -303,7 +356,11 @@ export async function POST(request: NextRequest) {
 
           const trimmedAssistant = assistantOutput.trim();
           if (trimmedAssistant) {
-            await saveAssistantMessageAndSummary(session.id, trimmedAssistant);
+            await saveAssistantMessageAndSummary({
+              sessionId: session.id,
+              assistantText: trimmedAssistant,
+              messageType: "text",
+            });
           }
 
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "done" })}\n\n`));

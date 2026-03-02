@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthFromRequest } from "@/lib/auth";
 import {
+  ChatMessage,
   createChatSession,
   getPresetRoleByCode,
   getSessionById,
@@ -12,6 +13,18 @@ type CreateSessionBody = {
   presetRoleCode?: string;
   initialContext?: string;
 };
+
+function toClientMessage(message: ChatMessage) {
+  return {
+    id: message.id,
+    role: message.role,
+    content: message.content,
+    mode: message.messageType,
+    audioUrl: message.messageType === "audio" ? message.mediaUrl : null,
+    imageUrl: message.messageType === "image" ? message.mediaUrl : null,
+    createdAt: message.createdAt,
+  };
+}
 
 export async function GET(request: NextRequest) {
   const authUser = await getAuthFromRequest(request);
@@ -27,7 +40,7 @@ export async function GET(request: NextRequest) {
         return NextResponse.json({ error: "会话不存在。" }, { status: 404 });
       }
       const messages = await listSessionMessages(session.id, 100);
-      return NextResponse.json({ messages });
+      return NextResponse.json({ messages: messages.map(toClientMessage) });
     }
 
     const presetRoleCode = request.nextUrl.searchParams.get("presetRoleCode")?.trim() ?? "";

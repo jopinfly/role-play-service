@@ -82,8 +82,10 @@ export async function generateImageByStability(input: GenerateImageInput) {
 
   const imageBuffer = Buffer.from(await response.arrayBuffer());
   const mimeType = response.headers.get("content-type") || "image/png";
+  const extension = outputFormat === "jpeg" ? "jpg" : outputFormat;
   return {
     mimeType,
-    base64: imageBuffer.toString("base64"),
+    extension,
+    buffer: imageBuffer,
   };
 }

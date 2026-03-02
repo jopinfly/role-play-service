@@ -113,10 +113,28 @@ export async function ensureSchema() {
       id BIGSERIAL PRIMARY KEY,
       session_id UUID NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
       role VARCHAR(20) NOT NULL,
+      message_type VARCHAR(20) NOT NULL DEFAULT 'text',
       content TEXT NOT NULL,
+      media_url TEXT,
+      media_mime_type VARCHAR(100),
       seq_no INT NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+  `;
+
+  await sql`
+    ALTER TABLE chat_messages
+    ADD COLUMN IF NOT EXISTS message_type VARCHAR(20) NOT NULL DEFAULT 'text';
+  `;
+
+  await sql`
+    ALTER TABLE chat_messages
+    ADD COLUMN IF NOT EXISTS media_url TEXT;
+  `;
+
+  await sql`
+    ALTER TABLE chat_messages
+    ADD COLUMN IF NOT EXISTS media_mime_type VARCHAR(100);
   `;
 
   await sql`

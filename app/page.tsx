@@ -20,11 +20,13 @@ type ChatSession = {
 };
 
 type ChatMessage = {
+  id?: string;
   role: "system" | "user" | "assistant";
   content: string;
   mode?: "text" | "audio" | "image";
-  audioUrl?: string;
-  imageUrl?: string;
+  audioUrl?: string | null;
+  imageUrl?: string | null;
+  createdAt?: string;
 };
 
 function buildAssistantGreeting(roleName?: string) {
@@ -262,17 +264,17 @@ export default function Home() {
           type: "text" | "audio" | "image";
           sessionId?: string;
           content?: string;
-          audio?: { base64?: string; mimeType?: string };
-          image?: { base64?: string; mimeType?: string };
+          audio?: { url?: string; mimeType?: string };
+          image?: { url?: string; mimeType?: string };
         };
         if (payload.sessionId) {
           setCurrentSessionId(payload.sessionId);
         }
 
-        if (payload.type === "image" && !(payload.image?.base64 ?? "")) {
+        if (payload.type === "image" && !(payload.image?.url ?? "")) {
           throw new Error("图片生成成功但图片为空。");
         }
-        if (payload.type === "audio" && !(payload.audio?.base64 ?? "")) {
+        if (payload.type === "audio" && !(payload.audio?.url ?? "")) {
           throw new Error("语音合成成功但音频为空。");
         }
 
@@ -284,23 +286,21 @@ export default function Home() {
           }
 
           if (payload.type === "image") {
-            const imageMimeType = payload.image?.mimeType ?? "image/png";
             next[next.length - 1] = {
               ...last,
               content: payload.content?.trim() || "图片回复",
               mode: "image",
-              imageUrl: `data:${imageMimeType};base64,${payload.image?.base64 ?? ""}`,
+              imageUrl: payload.image?.url ?? null,
             };
             return next;
           }
 
           if (payload.type === "audio") {
-            const audioMimeType = payload.audio?.mimeType ?? "audio/mpeg";
             next[next.length - 1] = {
               ...last,
               content: payload.content?.trim() || "语音回复",
               mode: "audio",
-              audioUrl: `data:${audioMimeType};base64,${payload.audio?.base64 ?? ""}`,
+              audioUrl: payload.audio?.url ?? null,
             };
             return next;
           }
