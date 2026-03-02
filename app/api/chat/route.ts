@@ -66,11 +66,43 @@ type ImageDecision = {
   imagePrompt: string;
 };
 
+function shouldForceImageByUserInput(userContent: string) {
+  const text = userContent.toLowerCase();
+  const keywords = [
+    "图片",
+    "照片",
+    "头像",
+    "海报",
+    "插画",
+    "画一张",
+    "生成图",
+    "配图",
+    "封面图",
+    "看下你",
+    "长什么样",
+    "look like",
+    "photo",
+    "image",
+    "picture",
+    "portrait",
+    "draw",
+    "illustration",
+  ];
+  return keywords.some((keyword) => text.includes(keyword));
+}
+
 async function decideImageReply(input: {
   userContent: string;
   assistantText: string;
   modelName: string;
 }) {
+  if (shouldForceImageByUserInput(input.userContent)) {
+    return {
+      useImage: true,
+      imagePrompt: `请根据下面需求生成一张高质量图片：${input.userContent}。若用户让你展示“你自己”的照片，请生成为“一个友好、专业的 AI 助手形象肖像”，写实风格，柔和光线，半身构图，干净背景。`,
+    };
+  }
+
   const decisionModel = new ChatOpenAI({
     apiKey: process.env.OPENAI_API_KEY,
     model: input.modelName,
@@ -81,7 +113,7 @@ async function decideImageReply(input: {
     {
       role: "system",
       content:
-        "你是回复模态决策器。请严格输出 JSON：{\"useImage\": boolean, \"imagePrompt\": string}。当用户明确要求生成图片、海报、插画、场景图、封面、头像、示意图时 useImage=true，否则 false。imagePrompt 需为可直接用于文生图的中文提示词，包含主体、风格、构图、光线、画质。",
+        "你是回复模态决策器。请严格输出 JSON：{\"useImage\": boolean, \"imagePrompt\": string}。当用户表达“想看图片/照片/长相/样子/插画/海报/配图/封面”等视觉诉求时，必须 useImage=true。即使候选文本里说“我没有照片”，也要改为生成一张符合请求的示意图。imagePrompt 需为可直接用于文生图的中文提示词，包含主体、风格、构图、光线、画质。",
     },
     {
       role: "user",
