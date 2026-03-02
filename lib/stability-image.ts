@@ -1,3 +1,5 @@
+import { ChatOpenAI } from "@langchain/openai";
+
 type GenerateImageInput = {
   prompt: string;
 };
@@ -52,6 +54,79 @@ function getStabilityApiKey() {
   return key;
 }
 
+function chunkToText(content: unknown) {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return content
+    .map((part) => {
+      if (typeof part === "string") {
+        return part;
+      }
+      if (part && typeof part === "object" && "text" in part) {
+        const text = (part as { text?: unknown }).text;
+        return typeof text === "string" ? text : "";
+      }
+      return "";
+    })
+    .join("");
+}
+
+function hasNonAsciiCharacters(text: string) {
+  return /[^\u0000-\u007f]/.test(text);
+}
+
+async function translatePromptToEnglish(prompt: string) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    return "";
+  }
+
+  const model = new ChatOpenAI({
+    apiKey,
+    model: process.env.STABILITY_PROMPT_MODEL ?? process.env.OPENAI_MODEL ?? "gpt-4o-mini",
+    temperature: 0,
+  });
+
+  const response = await model.invoke([
+    {
+      role: "system",
+      content:
+        "You are an image prompt translator for a text-to-image model. Convert the user prompt into clear, natural English prompt text. Preserve intent, entities, style and composition details. Output prompt text only.",
+    },
+    {
+      role: "user",
+      content: prompt,
+    },
+  ]);
+
+  return chunkToText(response.content).trim();
+}
+
+async function normalizePromptForStability(prompt: string) {
+  const trimmed = prompt.trim();
+  if (!trimmed) {
+    return "A high quality, detailed illustration with clean composition and soft lighting.";
+  }
+  if (!hasNonAsciiCharacters(trimmed)) {
+    return trimmed;
+  }
+
+  try {
+    const translated = await translatePromptToEnglish(trimmed);
+    if (translated) {
+      return translated;
+    }
+  } catch (error) {
+    console.error("image prompt translation failed", error);
+  }
+
+  return "A high quality, detailed illustration based on the user's request.";
+}
+
 export async function generateImageByStability(input: GenerateImageInput) {
   const endpoint =
     process.env.STABILITY_IMAGE_ENDPOINT ??
@@ -60,8 +135,9 @@ export async function generateImageByStability(input: GenerateImageInput) {
   const aspectRatio = process.env.STABILITY_IMAGE_ASPECT_RATIO ?? "1:1";
 
   const model = normalizeModelName(process.env.STABILITY_IMAGE_MODEL);
+  const prompt = await normalizePromptForStability(input.prompt);
   const formData = new FormData();
-  formData.set("prompt", input.prompt);
+  formData.set("prompt", prompt);
   formData.set("output_format", outputFormat);
   formData.set("aspect_ratio", aspectRatio);
   formData.set("model", model);

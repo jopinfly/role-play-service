@@ -1,4 +1,3 @@
-import { ChatOpenAI } from "@langchain/openai";
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthFromRequest } from "@/lib/auth";
 import {
@@ -14,8 +13,12 @@ import { summarizeAndStoreMessage } from "@/lib/chat-summary";
 import { synthesizeSpeechByMiniMax } from "@/lib/minimax-tts";
 import { generateImageByStability } from "@/lib/stability-image";
 import { uploadMediaToBlob } from "@/lib/blob-store";
-
-type ChatRole = "system" | "user" | "assistant";
+import {
+  ChatInputMessage,
+  decideImageReplyByModel,
+  invokeChatResponse,
+  streamChatResponse,
+} from "@/lib/langchain/chat-runtime";
 
 type ChatRequestBody = {
   presetRoleCode?: string;
@@ -24,31 +27,6 @@ type ChatRequestBody = {
   responseMode?: "text" | "audio";
   allowImageReply?: boolean;
 };
-
-function chunkToText(content: unknown) {
-  if (typeof content === "string") {
-    return content;
-  }
-
-  if (!Array.isArray(content)) {
-    return "";
-  }
-
-  return content
-    .map((item) => {
-      if (typeof item === "string") {
-        return item;
-      }
-
-      if (item && typeof item === "object") {
-        const text = (item as { text?: unknown }).text;
-        return typeof text === "string" ? text : "";
-      }
-
-      return "";
-    })
-    .join("");
-}
 
 async function saveAssistantMessageAndSummary(input: {
   sessionId: string;
@@ -71,11 +49,6 @@ async function saveAssistantMessageAndSummary(input: {
     console.error("assistant message summary failed", summaryError);
   }
 }
-
-type ImageDecision = {
-  useImage: boolean;
-  imagePrompt: string;
-};
 
 function shouldForceImageByUserInput(userContent: string) {
   const text = userContent.toLowerCase();
@@ -100,48 +73,6 @@ function shouldForceImageByUserInput(userContent: string) {
     "illustration",
   ];
   return keywords.some((keyword) => text.includes(keyword));
-}
-
-async function decideImageReply(input: {
-  userContent: string;
-  assistantText: string;
-  modelName: string;
-}) {
-  if (shouldForceImageByUserInput(input.userContent)) {
-    return {
-      useImage: true,
-      imagePrompt: `请根据下面需求生成一张高质量图片：${input.userContent}。若用户让你展示“你自己”的照片，请生成为“一个友好、专业的 AI 助手形象肖像”，写实风格，柔和光线，半身构图，干净背景。`,
-    };
-  }
-
-  const decisionModel = new ChatOpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-    model: input.modelName,
-    temperature: 0,
-  });
-
-  const decision = await decisionModel.invoke([
-    {
-      role: "system",
-      content:
-        "你是回复模态决策器。请严格输出 JSON：{\"useImage\": boolean, \"imagePrompt\": string}。当用户表达“想看图片/照片/长相/样子/插画/海报/配图/封面”等视觉诉求时，必须 useImage=true。即使候选文本里说“我没有照片”，也要改为生成一张符合请求的示意图。imagePrompt 需为可直接用于文生图的中文提示词，包含主体、风格、构图、光线、画质。",
-    },
-    {
-      role: "user",
-      content: `用户输入：${input.userContent}\n文本回复候选：${input.assistantText}`,
-    },
-  ]);
-
-  const raw = chunkToText(decision.content).trim();
-  try {
-    const parsed = JSON.parse(raw) as Partial<ImageDecision>;
-    return {
-      useImage: parsed.useImage === true,
-      imagePrompt: (parsed.imagePrompt ?? "").trim(),
-    };
-  } catch {
-    return { useImage: false, imagePrompt: "" };
-  }
 }
 
 export async function POST(request: NextRequest) {
@@ -205,7 +136,7 @@ export async function POST(request: NextRequest) {
     }
 
     const history = await listSessionMessages(session.id, 20);
-    const parsedMessages: Array<{ role: ChatRole; content: string }> = [
+    const parsedMessages: ChatInputMessage[] = [
       { role: "system", content: preset.systemPrompt },
     ];
     if (session.initialContext?.trim()) {
@@ -234,26 +165,20 @@ export async function POST(request: NextRequest) {
       console.error("user message summary failed", summaryError);
     }
 
-    const model = new ChatOpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-      model: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
-      temperature: 0.7,
-    });
-
     if (allowImageReply || responseMode === "audio") {
-      const invokeResult = await model.invoke(parsedMessages);
-      const assistantText = chunkToText(invokeResult.content).trim();
-      if (!assistantText) {
-        throw new Error("模型未生成可用回复。");
-      }
+      const assistantText = await invokeChatResponse(parsedMessages);
 
       if (allowImageReply) {
         try {
-          const decision = await decideImageReply({
-            userContent,
-            assistantText,
-            modelName: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
-          });
+          const decision = shouldForceImageByUserInput(userContent)
+            ? {
+              useImage: true,
+              imagePrompt: `请根据下面需求生成一张高质量图片：${userContent}。若用户让你展示“你自己”的照片，请生成为“一个友好、专业的 AI 助手形象肖像”，写实风格，柔和光线，半身构图，干净背景。`,
+            }
+            : await decideImageReplyByModel({
+              userContent,
+              assistantText,
+            });
           if (decision.useImage) {
             const image = await generateImageByStability({
               prompt: decision.imagePrompt || userContent,
@@ -330,7 +255,7 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    const stream = await model.stream(parsedMessages);
+    const stream = streamChatResponse(parsedMessages);
     const encoder = new TextEncoder();
     const output = new ReadableStream({
       async start(controller) {
@@ -342,11 +267,7 @@ export async function POST(request: NextRequest) {
             ),
           );
 
-          for await (const chunk of stream) {
-            const text = chunkToText(chunk.content);
-            if (!text) {
-              continue;
-            }
+          for await (const text of stream) {
             assistantOutput += text;
 
             controller.enqueue(
