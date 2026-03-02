@@ -3,6 +3,8 @@ import { neon } from "@neondatabase/serverless";
 let neonClient: ReturnType<typeof neon> | null = null;
 let schemaReady = false;
 
+type RowLike = Record<string, unknown>;
+
 export function getSql() {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
@@ -14,6 +16,19 @@ export function getSql() {
   }
 
   return neonClient;
+}
+
+export function toRows<T extends RowLike>(result: unknown): T[] {
+  if (Array.isArray(result)) {
+    return result as T[];
+  }
+  if (result && typeof result === "object") {
+    const rows = (result as { rows?: unknown }).rows;
+    if (Array.isArray(rows)) {
+      return rows as T[];
+    }
+  }
+  return [];
 }
 
 export async function ensureSchema() {

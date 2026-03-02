@@ -1,4 +1,4 @@
-import { ensureUsersTable, getSql } from "@/lib/db";
+import { ensureUsersTable, getSql, toRows } from "@/lib/db";
 
 export const LOGIN_MAX_ATTEMPTS = Number(process.env.LOGIN_MAX_ATTEMPTS ?? 5);
 export const LOGIN_ATTEMPT_WINDOW_SECONDS = Number(
@@ -53,12 +53,13 @@ export async function assertLoginAllowed(account: string, ip: string | null) {
   const scopes = buildScopes(account, ip);
 
   for (const scope of scopes) {
-    const rows = await sql<LoginLimitRow[]>`
+    const result = await sql`
       SELECT scope_key, failed_count, first_failed_at, locked_until
       FROM login_rate_limits
       WHERE scope_key = ${scope}
       LIMIT 1
     `;
+    const rows = toRows<LoginLimitRow>(result);
     const row = rows[0];
     if (!row?.locked_until) {
       continue;
@@ -80,12 +81,13 @@ export async function recordLoginFailure(account: string, ip: string | null) {
   const now = getNow();
 
   for (const scope of scopes) {
-    const rows = await sql<LoginLimitRow[]>`
+    const result = await sql`
       SELECT scope_key, failed_count, first_failed_at, locked_until
       FROM login_rate_limits
       WHERE scope_key = ${scope}
       LIMIT 1
     `;
+    const rows = toRows<LoginLimitRow>(result);
 
     const existing = rows[0];
     if (!existing) {

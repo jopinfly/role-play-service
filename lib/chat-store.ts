@@ -1,4 +1,4 @@
-import { ensureSchema, getSql } from "@/lib/db";
+import { ensureSchema, getSql, toRows } from "@/lib/db";
 
 export type ChatRole = "system" | "user" | "assistant";
 
@@ -101,7 +101,7 @@ export async function createPresetRole(input: {
 }) {
   await ensureSchema();
   const sql = getSql();
-  const inserted = await sql<PresetRoleRow[]>`
+  const result = await sql`
     INSERT INTO preset_roles (code, name, description, system_prompt, is_active, updated_at)
     VALUES (
       ${input.code},
@@ -113,32 +113,35 @@ export async function createPresetRole(input: {
     )
     RETURNING id, code, name, description, system_prompt, is_active
   `;
+  const inserted = toRows<PresetRoleRow>(result);
   return mapPresetRole(inserted[0]);
 }
 
 export async function getPresetRoleByCode(code: string, includeInactive = false) {
   await ensureSchema();
   const sql = getSql();
-  const rows = await sql<PresetRoleRow[]>`
+  const result = await sql`
     SELECT id, code, name, description, system_prompt, is_active
     FROM preset_roles
     WHERE code = ${code}
       AND (${includeInactive}::boolean = TRUE OR is_active = TRUE)
     LIMIT 1
   `;
+  const rows = toRows<PresetRoleRow>(result);
   const row = rows[0];
   return row ? mapPresetRole(row) : null;
 }
 
-export async function listPresetRoles() {
+export async function listPresetRoles(): Promise<PresetRole[]> {
   await ensureSchema();
   const sql = getSql();
-  const rows = await sql<PresetRoleRow[]>`
+  const result = await sql`
     SELECT id, code, name, description, system_prompt, is_active
     FROM preset_roles
     WHERE is_active = TRUE
     ORDER BY created_at ASC
   `;
+  const rows = toRows<PresetRoleRow>(result);
   return rows.map(mapPresetRole);
 }
 
@@ -151,7 +154,7 @@ export async function createChatSession(input: {
   await ensureSchema();
   const sql = getSql();
   const id = crypto.randomUUID();
-  const inserted = await sql<ChatSessionRow[]>`
+  const result = await sql`
     INSERT INTO chat_sessions (id, user_id, preset_role_id, initial_context, title, status, updated_at)
     VALUES (
       ${id},
@@ -164,6 +167,7 @@ export async function createChatSession(input: {
     )
     RETURNING id, user_id, preset_role_id, title, initial_context, status, created_at, updated_at
   `;
+  const inserted = toRows<ChatSessionRow>(result);
   return mapChatSession(inserted[0]);
 }
 
@@ -171,10 +175,10 @@ export async function listSessionsByRole(input: {
   userId: string;
   presetRoleId: string;
   limit?: number;
-}) {
+}): Promise<ChatSession[]> {
   await ensureSchema();
   const sql = getSql();
-  const rows = await sql<ChatSessionRow[]>`
+  const result = await sql`
     SELECT id, user_id, preset_role_id, title, initial_context, status, created_at, updated_at
     FROM chat_sessions
     WHERE user_id = ${input.userId}
@@ -182,19 +186,21 @@ export async function listSessionsByRole(input: {
     ORDER BY updated_at DESC
     LIMIT ${input.limit ?? 20}
   `;
+  const rows = toRows<ChatSessionRow>(result);
   return rows.map(mapChatSession);
 }
 
 export async function getSessionById(input: { sessionId: string; userId: string }) {
   await ensureSchema();
   const sql = getSql();
-  const rows = await sql<ChatSessionRow[]>`
+  const result = await sql`
     SELECT id, user_id, preset_role_id, title, initial_context, status, created_at, updated_at
     FROM chat_sessions
     WHERE id = ${input.sessionId}
       AND user_id = ${input.userId}
     LIMIT 1
   `;
+  const rows = toRows<ChatSessionRow>(result);
   const row = rows[0];
   return row ? mapChatSession(row) : null;
 }
@@ -202,7 +208,7 @@ export async function getSessionById(input: { sessionId: string; userId: string 
 export async function getLatestSessionByRole(input: { userId: string; presetRoleId: string }) {
   await ensureSchema();
   const sql = getSql();
-  const rows = await sql<ChatSessionRow[]>`
+  const result = await sql`
     SELECT id, user_id, preset_role_id, title, initial_context, status, created_at, updated_at
     FROM chat_sessions
     WHERE user_id = ${input.userId}
@@ -211,20 +217,22 @@ export async function getLatestSessionByRole(input: { userId: string; presetRole
     ORDER BY updated_at DESC
     LIMIT 1
   `;
+  const rows = toRows<ChatSessionRow>(result);
   const row = rows[0];
   return row ? mapChatSession(row) : null;
 }
 
-export async function listSessionMessages(sessionId: string, limit = 20) {
+export async function listSessionMessages(sessionId: string, limit = 20): Promise<ChatMessage[]> {
   await ensureSchema();
   const sql = getSql();
-  const rows = await sql<ChatMessageRow[]>`
+  const result = await sql`
     SELECT id, role, content, seq_no, created_at
     FROM chat_messages
     WHERE session_id = ${sessionId}
     ORDER BY seq_no DESC
     LIMIT ${limit}
   `;
+  const rows = toRows<ChatMessageRow>(result);
   return rows.reverse().map(mapChatMessage);
 }
 
@@ -235,17 +243,19 @@ export async function appendChatMessage(input: {
 }) {
   await ensureSchema();
   const sql = getSql();
-  const nextRows = await sql<{ next_seq: number }[]>`
+  const nextResult = await sql`
     SELECT COALESCE(MAX(seq_no), 0) + 1 AS next_seq
     FROM chat_messages
     WHERE session_id = ${input.sessionId}
   `;
+  const nextRows = toRows<{ next_seq: number }>(nextResult);
   const nextSeq = nextRows[0]?.next_seq ?? 1;
-  const inserted = await sql<ChatMessageRow[]>`
+  const insertResult = await sql`
     INSERT INTO chat_messages (session_id, role, content, seq_no)
     VALUES (${input.sessionId}, ${input.role}, ${input.content}, ${nextSeq})
     RETURNING id, role, content, seq_no, created_at
   `;
+  const inserted = toRows<ChatMessageRow>(insertResult);
   await touchSession(input.sessionId);
   return mapChatMessage(inserted[0]);
 }

@@ -7,7 +7,7 @@ import {
   getClientInfo,
   setAuthCookie,
 } from "@/lib/auth";
-import { ensureUsersTable, getSql } from "@/lib/db";
+import { ensureUsersTable, getSql, toRows } from "@/lib/db";
 
 type RegisterBody = {
   username?: string;
@@ -49,22 +49,24 @@ export async function POST(request: Request) {
   try {
     await ensureUsersTable();
     const sql = getSql();
-    const existing = await sql<{ id: number }[]>`
+    const existingResult = await sql`
       SELECT id
       FROM users
       WHERE email = ${email} OR username = ${username}
       LIMIT 1
     `;
+    const existing = toRows<{ id: number }>(existingResult);
     if (existing.length > 0) {
       return NextResponse.json({ error: "用户名或邮箱已存在。" }, { status: 409 });
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
-    const inserted = await sql<UserRecord[]>`
+    const insertedResult = await sql`
       INSERT INTO users (username, email, password_hash)
       VALUES (${username}, ${email}, ${passwordHash})
       RETURNING id, username, email
     `;
+    const inserted = toRows<UserRecord>(insertedResult);
     const user = inserted[0];
 
     const clientInfo = getClientInfo(request);

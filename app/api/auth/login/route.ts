@@ -7,7 +7,7 @@ import {
   getClientInfo,
   setAuthCookie,
 } from "@/lib/auth";
-import { ensureUsersTable, getSql } from "@/lib/db";
+import { ensureUsersTable, getSql, toRows } from "@/lib/db";
 import {
   assertLoginAllowed,
   clearLoginFailures,
@@ -58,12 +58,13 @@ export async function POST(request: Request) {
     await ensureUsersTable();
     const sql = getSql();
     const emailCandidate = account.toLowerCase();
-    const rows = await sql<UserLoginRecord[]>`
+    const result = await sql`
       SELECT id, username, email, password_hash
       FROM users
       WHERE email = ${emailCandidate} OR username = ${account}
       LIMIT 1
     `;
+    const rows = toRows<UserLoginRecord>(result);
     const user = rows[0];
 
     if (!user) {

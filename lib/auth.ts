@@ -1,6 +1,6 @@
 import { JWTPayload, SignJWT, jwtVerify } from "jose";
 import { NextRequest, NextResponse } from "next/server";
-import { ensureUsersTable, getSql } from "@/lib/db";
+import { ensureUsersTable, getSql, toRows } from "@/lib/db";
 
 export const AUTH_COOKIE_NAME = "auth_token";
 export const AUTH_TOKEN_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
@@ -80,7 +80,7 @@ export async function createAuthToken(user: AuthUser) {
 async function isSessionActive(sessionId: string, userId: string) {
   await ensureUsersTable();
   const sql = getSql();
-  const rows = await sql<{ id: string }[]>`
+  const result = await sql`
     SELECT id
     FROM auth_sessions
     WHERE id = ${sessionId}
@@ -89,6 +89,7 @@ async function isSessionActive(sessionId: string, userId: string) {
       AND expires_at > NOW()
     LIMIT 1
   `;
+  const rows = toRows<{ id: string }>(result);
   return rows.length > 0;
 }
 
