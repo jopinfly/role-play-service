@@ -29,6 +29,41 @@ type ChatMessage = {
   createdAt?: string;
 };
 
+function hashSeed(seed: string) {
+  let hash = 0;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash = (hash << 5) - hash + seed.charCodeAt(index);
+    hash |= 0;
+  }
+  return Math.abs(hash);
+}
+
+function buildPortraitDataUri(seed: string, roleName: string) {
+  const palettes = [
+    ["#60a5fa", "#2563eb"],
+    ["#f472b6", "#db2777"],
+    ["#34d399", "#059669"],
+    ["#f59e0b", "#d97706"],
+    ["#a78bfa", "#7c3aed"],
+  ];
+  const palette = palettes[hashSeed(seed) % palettes.length];
+  const initials = roleName.trim().slice(0, 2) || "AI";
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="420" viewBox="0 0 320 420">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="${palette[0]}"/>
+      <stop offset="100%" stop-color="${palette[1]}"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="320" height="420" rx="28" fill="url(#bg)"/>
+  <circle cx="160" cy="132" r="64" fill="rgba(255,255,255,0.22)"/>
+  <rect x="68" y="220" width="184" height="132" rx="66" fill="rgba(255,255,255,0.2)"/>
+  <text x="160" y="145" text-anchor="middle" font-size="44" font-family="Arial, Helvetica, sans-serif" fill="#ffffff" font-weight="700">${initials}</text>
+  <text x="160" y="390" text-anchor="middle" font-size="18" font-family="Arial, Helvetica, sans-serif" fill="rgba(255,255,255,0.95)">角色立绘</text>
+</svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
 function buildAssistantGreeting(roleName?: string) {
   if (!roleName) {
     return "请选择一个预设角色后开始对话。";
@@ -55,6 +90,7 @@ export default function Home() {
     () => presets.find((preset) => preset.code === selectedPresetCode) ?? null,
     [presets, selectedPresetCode],
   );
+  const latestSession = sessions[0] ?? null;
   const canSubmit = useMemo(() => input.trim().length > 0 && !isLoading, [input, isLoading]);
 
   useEffect(() => {
@@ -170,20 +206,6 @@ export default function Home() {
     }
     const data = (await response.json()) as { sessions?: ChatSession[] };
     setSessions(data.sessions ?? []);
-  };
-
-  const handleSwitchSession = async (sessionId: string) => {
-    if (!selectedPresetCode || isLoading) {
-      return;
-    }
-    setError("");
-    setCurrentSessionId(sessionId);
-    try {
-      await loadSessionMessages(sessionId, selectedPreset?.name);
-    } catch (switchError) {
-      const message = switchError instanceof Error ? switchError.message : "切换会话失败。";
-      setError(message);
-    }
   };
 
   const handleRestartContext = async () => {
@@ -392,12 +414,12 @@ export default function Home() {
   };
 
   return (
-    <div className="mx-auto flex min-h-screen w-full max-w-3xl flex-col bg-white px-4 py-8 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100 sm:px-6">
+    <div className="mx-auto flex min-h-screen w-full max-w-6xl flex-col bg-white px-4 py-6 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100 sm:px-6">
       <header className="mb-6 flex items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold">LangChain Chatbot</h1>
           <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
-            支持预设角色、独立会话、消息摘要与上下文重启。
+            左侧选择角色，右侧查看并延续该角色最近一次会话。
           </p>
           {profile ? (
             <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
@@ -414,142 +436,178 @@ export default function Home() {
         </button>
       </header>
 
-      <section className="mb-4 grid gap-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-900 md:grid-cols-3">
-        <div className="space-y-1">
-          <p className="text-xs text-zinc-500 dark:text-zinc-400">预设角色</p>
-          <select
-            value={selectedPresetCode}
-            onChange={(event) => setSelectedPresetCode(event.target.value)}
-            className="w-full rounded-lg border border-zinc-300 bg-white px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950"
-          >
-            {presets.map((preset) => (
-              <option key={preset.code} value={preset.code}>
-                {preset.name}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="space-y-1 md:col-span-2">
-          <p className="text-xs text-zinc-500 dark:text-zinc-400">会话列表</p>
-          <div className="flex flex-wrap gap-2">
-            {sessions.length === 0 ? (
-              <span className="text-xs text-zinc-500 dark:text-zinc-400">暂无历史会话</span>
+      <section className="grid flex-1 gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
+        <aside className="rounded-xl border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-900">
+          <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">角色列表</p>
+          <div className="space-y-2">
+            {presets.length === 0 ? (
+              <p className="text-sm text-zinc-500 dark:text-zinc-400">暂无可选角色</p>
             ) : (
-              sessions.map((session) => (
-                <button
-                  key={session.id}
-                  type="button"
-                  onClick={() => void handleSwitchSession(session.id)}
-                  className={`rounded-lg border px-2 py-1 text-xs ${
-                    currentSessionId === session.id
-                      ? "border-blue-600 bg-blue-600 text-white"
-                      : "border-zinc-300 hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
-                  }`}
-                >
-                  {session.id.slice(0, 8)}
-                </button>
-              ))
+              presets.map((preset) => {
+                const isActive = selectedPresetCode === preset.code;
+                const portraitDataUri = buildPortraitDataUri(preset.code, preset.name);
+                return (
+                  <button
+                    key={preset.code}
+                    type="button"
+                    onClick={() => setSelectedPresetCode(preset.code)}
+                    className={`w-full rounded-xl border p-2 text-left transition ${
+                      isActive
+                        ? "border-blue-500 bg-blue-50 dark:bg-blue-950/30"
+                        : "border-zinc-200 bg-white hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-950 dark:hover:bg-zinc-800"
+                    }`}
+                  >
+                    <div className="flex gap-3">
+                      <Image
+                        src={portraitDataUri}
+                        alt={`${preset.name} 立绘`}
+                        width={64}
+                        height={84}
+                        className="h-[84px] w-16 rounded-lg object-cover"
+                        unoptimized
+                      />
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium">{preset.name}</p>
+                        <p className="mt-1 text-xs leading-5 text-zinc-600 dark:text-zinc-300">
+                          {preset.description?.trim() || "暂无角色简介"}
+                        </p>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })
             )}
           </div>
-        </div>
-        <div className="space-y-1 md:col-span-3">
-          <p className="text-xs text-zinc-500 dark:text-zinc-400">重启上下文（可选）</p>
-          <div className="flex gap-2">
-            <input
-              value={restartContext}
-              onChange={(event) => setRestartContext(event.target.value)}
-              placeholder="输入该角色新的初始上下文，然后点击“重启会话”"
-              className="w-full rounded-lg border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950"
-            />
-            <button
-              type="button"
-              onClick={() => void handleRestartContext()}
-              className="rounded-lg border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
-            >
-              重启会话
-            </button>
-          </div>
-        </div>
-        <div className="space-y-1 md:col-span-3">
-          <label className="inline-flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-200">
-            <input
-              type="checkbox"
-              checked={voiceReplyEnabled}
-              onChange={(event) => setVoiceReplyEnabled(event.target.checked)}
-            />
-            语音回复（仅输出语音，不支持语音输入）
-          </label>
-        </div>
-        <div className="space-y-1 md:col-span-3">
-          <label className="inline-flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-200">
-            <input
-              type="checkbox"
-              checked={allowImageReply}
-              onChange={(event) => setAllowImageReply(event.target.checked)}
-            />
-            允许图片回复（由机器人决定，优先级高于语音）
-          </label>
-        </div>
-      </section>
+        </aside>
 
-      <main className="flex-1 space-y-3 overflow-y-auto scroll-smooth rounded-xl border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900">
-        {messages.map((message, index) => (
-          <div
-            key={`${message.role}-${index}`}
-            className={`animate-chat-pop max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm transition-all duration-300 ${
-              message.role === "user"
-                ? "ml-auto bg-blue-600 text-white"
-                : "bg-white text-zinc-800 dark:bg-zinc-800 dark:text-zinc-100"
-            }`}
-          >
-            {message.mode === "image" && message.imageUrl ? (
-              <div className="space-y-2">
+        <div className="flex min-h-[70vh] flex-col">
+          <div className="mb-3 flex items-start gap-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-900">
+            {selectedPreset ? (
+              <>
                 <Image
-                  src={message.imageUrl}
-                  alt="AI image reply"
-                  width={512}
-                  height={512}
-                  className="max-h-96 rounded-lg"
+                  src={buildPortraitDataUri(selectedPreset.code, selectedPreset.name)}
+                  alt={`${selectedPreset.name} 立绘`}
+                  width={84}
+                  height={110}
+                  className="h-[110px] w-[84px] rounded-lg object-cover"
                   unoptimized
                 />
-                {message.content ? <p>{message.content}</p> : null}
-              </div>
-            ) : message.mode === "audio" && message.audioUrl ? (
-              <audio controls src={message.audioUrl} className="w-full max-w-sm">
-                你的浏览器不支持 audio 标签。
-              </audio>
-            ) : message.content ? (
-              message.content
+                <div className="min-w-0">
+                  <p className="text-base font-semibold">{selectedPreset.name}</p>
+                  <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
+                    {selectedPreset.description?.trim() || "暂无角色简介"}
+                  </p>
+                  <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+                    最近会话：{latestSession ? latestSession.id.slice(0, 8) : "暂无历史会话"}
+                  </p>
+                </div>
+              </>
             ) : (
-              <span className="typing-dots">
-                <i />
-                <i />
-                <i />
-              </span>
+              <p className="text-sm text-zinc-500 dark:text-zinc-400">请选择一个角色开始聊天</p>
             )}
           </div>
-        ))}
-        <div ref={bottomRef} />
-      </main>
 
-      <form onSubmit={handleSubmit} className="mt-4 space-y-2">
-        <textarea
-          value={input}
-          onChange={(event) => setInput(event.target.value)}
-          placeholder="输入你的问题，按发送即可对话（按角色独立存储）"
-          className="min-h-28 w-full resize-y rounded-xl border border-zinc-300 p-3 text-sm outline-none ring-blue-500 transition focus:ring-2 dark:border-zinc-700 dark:bg-zinc-900"
-        />
-        <div className="flex items-center justify-between">
-          {error ? <p className="text-sm text-red-500">{error}</p> : <span />}
-          <button
-            type="submit"
-            disabled={!canSubmit}
-            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-zinc-400"
-          >
-            {isLoading ? "发送中..." : "发送"}
-          </button>
+          <main className="flex-1 space-y-3 overflow-y-auto scroll-smooth rounded-xl border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900">
+            {messages.map((message, index) => (
+              <div
+                key={`${message.role}-${index}`}
+                className={`animate-chat-pop max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm transition-all duration-300 ${
+                  message.role === "user"
+                    ? "ml-auto bg-blue-600 text-white"
+                    : "bg-white text-zinc-800 dark:bg-zinc-800 dark:text-zinc-100"
+                }`}
+              >
+                {message.mode === "image" && message.imageUrl ? (
+                  <div className="space-y-2">
+                    <Image
+                      src={message.imageUrl}
+                      alt="AI image reply"
+                      width={512}
+                      height={512}
+                      className="max-h-96 rounded-lg"
+                      unoptimized
+                    />
+                    {message.content ? <p>{message.content}</p> : null}
+                  </div>
+                ) : message.mode === "audio" && message.audioUrl ? (
+                  <audio controls src={message.audioUrl} className="w-full max-w-sm">
+                    你的浏览器不支持 audio 标签。
+                  </audio>
+                ) : message.content ? (
+                  message.content
+                ) : (
+                  <span className="typing-dots">
+                    <i />
+                    <i />
+                    <i />
+                  </span>
+                )}
+              </div>
+            ))}
+            <div ref={bottomRef} />
+          </main>
+
+          <div className="mt-3 grid gap-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-900 md:grid-cols-2">
+            <div className="space-y-1 md:col-span-2">
+              <p className="text-xs text-zinc-500 dark:text-zinc-400">重启上下文（可选）</p>
+              <div className="flex gap-2">
+                <input
+                  value={restartContext}
+                  onChange={(event) => setRestartContext(event.target.value)}
+                  placeholder="输入该角色新的初始上下文，然后点击“重启会话”"
+                  className="w-full rounded-lg border border-zinc-300 px-2 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-950"
+                />
+                <button
+                  type="button"
+                  onClick={() => void handleRestartContext()}
+                  className="rounded-lg border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                >
+                  重启会话
+                </button>
+              </div>
+            </div>
+            <div className="space-y-1">
+              <label className="inline-flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-200">
+                <input
+                  type="checkbox"
+                  checked={voiceReplyEnabled}
+                  onChange={(event) => setVoiceReplyEnabled(event.target.checked)}
+                />
+                语音回复
+              </label>
+            </div>
+            <div className="space-y-1">
+              <label className="inline-flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-200">
+                <input
+                  type="checkbox"
+                  checked={allowImageReply}
+                  onChange={(event) => setAllowImageReply(event.target.checked)}
+                />
+                允许图片回复
+              </label>
+            </div>
+          </div>
+
+          <form onSubmit={handleSubmit} className="mt-3 space-y-2">
+            <textarea
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              placeholder="输入你的问题，按发送即可对话（按角色独立存储）"
+              className="min-h-28 w-full resize-y rounded-xl border border-zinc-300 p-3 text-sm outline-none ring-blue-500 transition focus:ring-2 dark:border-zinc-700 dark:bg-zinc-900"
+            />
+            <div className="flex items-center justify-between">
+              {error ? <p className="text-sm text-red-500">{error}</p> : <span />}
+              <button
+                type="submit"
+                disabled={!canSubmit}
+                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-zinc-400"
+              >
+                {isLoading ? "发送中..." : "发送"}
+              </button>
+            </div>
+          </form>
         </div>
-      </form>
+      </section>
     </div>
   );
 }
